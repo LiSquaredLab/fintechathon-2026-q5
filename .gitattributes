@@ -1,0 +1,10 @@
+# 统一换行符，避免 Windows / macOS / Linux 协作时产生假改动
+* text=auto eol=lf
+
+# 图片按二进制处理，不做换行转换或 diff
+*.png binary
+*.jpg binary
+*.pdf binary
+
+# 表格文件按二进制处理
+*.xlsx binary

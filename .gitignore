@@ -1,0 +1,33 @@
+# ============================================================
+# 赛题原始数据 —— 体积过大（训练集 947MB / 测试集 169MB，
+# 均超过 GitHub 单文件 100MB 硬限制），且赛事数据不宜公开再分发。
+# 请从竞赛官方渠道获取后放入 ./赛题五数据/ 目录：
+#     赛题五数据/训练集.csv
+#     赛题五数据/测试集_X.csv
+# ============================================================
+赛题五数据/
+
+# 提交产物（约 62MB，可由 fintechathon_q5.py 一键复现）
+submission.csv
+run_final.log
+
+# 含队员个人信息的材料（姓名/学校/联系方式等）
+teaminformationform.xlsx
+TASK 0：大赛报名.docx
+
+# Office 临时锁文件
+~$*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
