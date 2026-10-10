@@ -20,12 +20,11 @@
      与该股真实股价一致。因此均价偏离度因子用 (amount/vol)/close，
      并相对其自身 20 日均值取偏离；若照搬 "amount/(vol*100)/close" 会得到
      近似恒等于 0 的常数，因子完全失效（已在本地数据上验证）。
-  2. 训练集 2018-01-02 ~ 2024-12-31；测试集 2025-01-02 ~ 2025-01-08，仅 5 个交易日。
+  2. 训练集 2018-01-02 ~ 2024-12-31；测试集 2025-01-02 ~ 2026-06-08，共 344 个交易日。
   3. 训练集尾部 y_ret_1d 缺失率约 30%（全样本约 14.5%），缺失与停牌/退市/涨跌停相关，
      建模前必须剔除。
-  4. 测试期极短（5 日）→ 官方换手率项 (1-turnover)×0.3 的权重被极度放大：
-     换手 0.95 连吃 4 天 → 0.95^4≈0.815；换手 0.20 连吃 4 天 → 0.80^4≈0.41。
-     这一项几乎单独决定排名，故本脚本把"压低换手率"作为一等目标。
+  4. 测试期覆盖 344 个交易日，官方换手率项 (1-turnover)×0.3 会持续影响排名，
+     故本脚本把"压低换手率"作为一等目标。
 
 --------------------------------------------------------------------------------
 【与官方 evaluate.py 的严格对齐点】（逐条核对过）
@@ -234,10 +233,12 @@ def build_factors(raw: pd.DataFrame) -> pd.DataFrame:
         return out.reset_index(level=0, drop=True).sort_index()
 
     # ---------- 1) 动量 / 反转 ----------
-    df["f01_ret_1d"] = c.pct_change(1)
-    df["f02_ret_5d"] = c.pct_change(5)
-    df["f03_ret_10d"] = c.pct_change(10)
-    df["f04_ret_20d"] = c.pct_change(20)
+    # 必须沿每只股票自己的时间轴计算，不能让股票边界串入上一只股票的价格。
+    # 显式关闭缺失值前值填充，避免停牌/缺失价格制造人工收益。
+    df["f01_ret_1d"] = g["close"].pct_change(1, fill_method=None)
+    df["f02_ret_5d"] = g["close"].pct_change(5, fill_method=None)
+    df["f03_ret_10d"] = g["close"].pct_change(10, fill_method=None)
+    df["f04_ret_20d"] = g["close"].pct_change(20, fill_method=None)
     df["f05_rev_5d"] = -df["f02_ret_5d"]
 
     # ---------- 2) 日内形态 ----------
@@ -350,7 +351,11 @@ def anchor_signal(df: pd.DataFrame, date_idx: dict,
     cols = [c for c in anchor_cols if c in df.columns]
     anchor = np.zeros(len(df), dtype=np.float64)
     for c in cols:
-        anchor += cs_rank(df[c].to_numpy(dtype=np.float64))
+        values = df[c].to_numpy(dtype=np.float64)
+        ranked = np.zeros(len(df), dtype=np.float64)
+        for idx in date_idx.values():
+            ranked[idx] = cs_rank(values[idx])
+        anchor += ranked
     anchor /= max(len(cols), 1)
     return anchor
 
@@ -372,7 +377,7 @@ def _coerce(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_train(path: str) -> pd.DataFrame:
+def load_train(path: str, history_days: int = 0):
     """加载训练集：清洗标签缺失 + 价格异常 + 涨停（流动性陷阱）样本。"""
     t = time.time()
     log(f"读取训练集: {path}")
@@ -380,6 +385,16 @@ def load_train(path: str) -> pd.DataFrame:
     log(f"  原始规模: {len(df):,} 行 | 交易日 {df['trade_date'].nunique()} 个 | "
         f"股票 {df['ts_code'].nunique():,} 只 | 用时 {time.time() - t:.1f}s")
     df = _coerce(df)
+
+    # 测试期因子需要训练集尾部的连续原始行情。保留这段未清洗历史，
+    # 避免删除标签缺失或涨跌停行后破坏滚动窗口的时间连续性。
+    raw_history = None
+    if history_days:
+        raw_dates = np.sort(df["trade_date"].unique())
+        hist_start = raw_dates[-history_days] if len(raw_dates) > history_days else raw_dates[0]
+        history_cols = ["ts_code", "trade_date", "open", "high", "low", "close",
+                        "vol", "amount", "flag_limit_up", "flag_limit_down"]
+        raw_history = df.loc[df["trade_date"] >= hist_start, history_cols].copy()
 
     n0 = len(df)
     # ---- 清洗 1：剔除标签缺失（全样本约 14.5%，训练集尾部约 30%）----
@@ -408,7 +423,7 @@ def load_train(path: str) -> pd.DataFrame:
 
     df = df.reset_index(drop=True)
     log(f"  清洗后: {len(df):,} 行 | 交易日 {df['trade_date'].nunique()} 个")
-    return df
+    return (df, raw_history) if history_days else df
 
 
 def load_test(path: str) -> pd.DataFrame:
@@ -796,7 +811,12 @@ def main():
     log("=" * 78)
     log("步骤 1/7  数据加载与交易限制处理（剔标签缺失 / 涨停 / 跌停）")
     log("=" * 78)
-    train = load_train(train_path)
+    train_result = load_train(train_path, history_days=CFG["test_history_days"] if test_available else 0)
+    if test_available:
+        train, raw_history = train_result
+    else:
+        train = train_result
+        raw_history = None
     if args.max_train_rows and args.max_train_rows < len(train):
         train = train.tail(args.max_train_rows).reset_index(drop=True)
         log(f"  [调试] 截取末尾 {len(train):,} 行")
@@ -991,12 +1011,9 @@ def main():
         # 测试期首日若缺前 20 个交易日历史，MA20/20日波动率等长周期因子会整列为 NaN，
         # 等于丢掉这批因子。拼接口径只用到测试日之前的历史，不产生任何泄露；
         # 拼接边界上，训练集尾部与测试集首日之间的滚动窗口正好接续。
-        hist_start = all_dates[-CFG["test_history_days"]] if \
-            len(all_dates) > CFG["test_history_days"] else all_dates[0]
         need = ["ts_code", "trade_date", "open", "high", "low", "close", "vol", "amount",
                 "flag_limit_up", "flag_limit_down"]
-        hist = pd.concat([train.loc[train["trade_date"] >= hist_start, need],
-                          test[need]], ignore_index=True)
+        hist = pd.concat([raw_history, test[need]], ignore_index=True)
         log(f"  拼接历史用于因子计算：{len(hist):,} 行 "
             f"（含测试期前 {CFG['test_history_days']} 个交易日的训练集尾部）")
 
