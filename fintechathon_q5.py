@@ -148,6 +148,18 @@ FACTOR_COLS = [
     "f24_vol_std_20d",       # 成交量 20 日波动率
     # ---- Beta 代理 ----
     "f26_beta_proxy",        # 个股收益对"昨日截面中位收益"的 20 日滚动敏感度
+    # ---- 补充形态、长期位置与截面排名特征 ----
+    "f27_ret_2d",  # 2 日收益率
+    "f28_ret_60d",  # 60 日收益率
+    "f29_intraday_ret",  # close/open - 1
+    "f30_upper_shadow",  # 上影线 / close
+    "f31_lower_shadow",  # 下影线 / close
+    "f32_body_ratio",  # 有符号实体 / 当日高低区间
+    "f33_price_pos_20d",  # 收盘价在 20 日高低区间的位置
+    "f34_price_pos_60d",  # 收盘价在 60 日高低区间的位置
+    # f35/f36 为已弃用的涨跌停计数实验，保留空号以对应实验记录。
+    "f37_ret_1d_rank_pct",  # 1 日收益的当日截面百分位
+    "f38_ret_20d_rank_pct",  # 20 日收益的当日截面百分位
 ]
 
 # 用于构造"稳健动量锚"的因子（低噪声、时间自相关强 → 天然低换手）
@@ -309,6 +321,27 @@ def build_factors(raw: pd.DataFrame) -> pd.DataFrame:
         - roll(med_lag, 20, 10, "mean") ** 2
     df["f26_beta_proxy"] = cov / (var.abs() + eps)
     df.drop(columns=["_cs_med_ret"], inplace=True)
+
+    # ---------- 7) 补充特征：形态、长期位置与截面排名 ----------
+    df["f27_ret_2d"] = g["close"].pct_change(2, fill_method=None)
+    df["f28_ret_60d"] = g["close"].pct_change(60, fill_method=None)
+    df["f29_intraday_ret"] = c / (o + eps) - 1.0
+    df["f30_upper_shadow"] = (h - np.maximum(o, c)) / (c + eps)
+    df["f31_lower_shadow"] = (np.minimum(o, c) - lo) / (c + eps)
+    df["f32_body_ratio"] = (c - o) / (h - lo + eps)
+
+    low20 = roll(lo, 20, 10, "min")
+    high20 = roll(h, 20, 10, "max")
+    low60 = roll(lo, 60, 30, "min")
+    high60 = roll(h, 60, 30, "max")
+    df["f33_price_pos_20d"] = (c - low20) / (high20 - low20 + eps)
+    df["f34_price_pos_60d"] = (c - low60) / (high60 - low60 + eps)
+
+    # 截面百分位是对逐日 Z-Score 的补充，仍只使用当日可见横截面。
+    df["f37_ret_1d_rank_pct"] = df["f01_ret_1d"].groupby(
+        df["trade_date"], sort=False).rank(pct=True, method="average")
+    df["f38_ret_20d_rank_pct"] = df["f04_ret_20d"].groupby(
+        df["trade_date"], sort=False).rank(pct=True, method="average")
 
     # inf → NaN，交给标准化阶段按当日截面中位数填充
     for col in FACTOR_COLS:
@@ -822,6 +855,8 @@ def main():
                     help="稳健动量锚权重")
     ap.add_argument("--tune", type=int, default=1,
                     help="1 = 网格搜索 (anchor_weight, smooth_span) 取最优；0 = 用命令行给定值")
+    ap.add_argument("--ema_grid", type=int, nargs="+", default=[0, 3, 5, 8, 12, 20],
+                    help="EMA 搜索跨度；扩展实验可传 0 3 5 8 12 20 30 40 50 60")
     ap.add_argument("--tune_recent_days", type=int, default=CFG["tune_recent_days"],
                     help="仅用验证段末尾 N 个交易日选参；0 = 用全部验证段")
     ap.add_argument("--max_train_rows", type=int, default=0,
@@ -833,6 +868,8 @@ def main():
                     help="LightGBM 线程数；-1 = 全部 CPU 核心")
     ap.add_argument("--skip_submission", action="store_true", help="只做本地验证，不导出提交文件")
     args = ap.parse_args()
+    if any(sp < 0 for sp in args.ema_grid):
+        ap.error("--ema_grid 不能包含负数")
     CFG["n_jobs"] = args.n_jobs              # build_model() 从 CFG 读取线程数
 
     test_dir = args.test_dir or args.data_dir
@@ -999,7 +1036,7 @@ def main():
         tune_idx = {d: date_idx_va[d] for d in all_va_dates if d in tune_dates}
 
         grid_w = [0.0, 0.15, 0.30, 0.45, 0.60, 0.75]
-        grid_span = [0, 3, 5, 8, 12, 20]
+        grid_span = sorted(set(args.ema_grid))
         log("  网格搜索（锚权重 w × 平滑跨度 span）— 仅在上述窗口上评估：")
         log(f"  {'w':>6} {'span':>5} {'RankIC':>10} {'年化超额':>11} "
             f"{'换手率':>9} {'(1-换手)':>10} {'综合得分':>11}")
@@ -1030,6 +1067,23 @@ def main():
                     best = {"w": w, "span": sp, "score": sc}
         log(f"  → 最优组合：anchor_weight = {best['w']}, smooth_span = {best['span']}, "
             f"选参窗口综合得分 = {best['score']:+.6f}")
+    else:
+        # 固定参数运行时也记录同一选参窗口上的可比得分，避免 run_summary
+        # 把未使用的初始化值 -1e18 写成正式结果。
+        if args.tune_recent_days and args.tune_recent_days < len(all_va_dates):
+            fixed_dates = set(all_va_dates[-args.tune_recent_days:])
+        else:
+            fixed_dates = set(all_va_dates)
+        fixed_idx = {d: date_idx_va[d] for d in all_va_dates if d in fixed_dates}
+        fixed = va[["ts_code", "trade_date", "y_ret_1d", "flag_limit_up"]].copy()
+        fixed["pred"] = combine_and_smooth(
+            va, va["model_rank"].to_numpy(), va["anchor"].to_numpy(),
+            best["w"], best["span"])
+        fixed_ic, *_ = daily_rank_ic(fixed, date_idx=fixed_idx)
+        fixed_ae, *_ = daily_top_excess(fixed, date_idx=fixed_idx)
+        fixed_tv, _ = daily_turnover(fixed, date_idx=fixed_idx)
+        best["score"] = composite_score(fixed_ic, fixed_ae, fixed_tv)
+        del fixed
 
     va["pred"] = combine_and_smooth(va, va["model_rank"].to_numpy(),
                                     va["anchor"].to_numpy(), best["w"], best["span"])
