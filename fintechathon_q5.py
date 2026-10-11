@@ -1067,6 +1067,23 @@ def main():
                     best = {"w": w, "span": sp, "score": sc}
         log(f"  → 最优组合：anchor_weight = {best['w']}, smooth_span = {best['span']}, "
             f"选参窗口综合得分 = {best['score']:+.6f}")
+    else:
+        # 固定参数运行时也记录同一选参窗口上的可比得分，避免 run_summary
+        # 把未使用的初始化值 -1e18 写成正式结果。
+        if args.tune_recent_days and args.tune_recent_days < len(all_va_dates):
+            fixed_dates = set(all_va_dates[-args.tune_recent_days:])
+        else:
+            fixed_dates = set(all_va_dates)
+        fixed_idx = {d: date_idx_va[d] for d in all_va_dates if d in fixed_dates}
+        fixed = va[["ts_code", "trade_date", "y_ret_1d", "flag_limit_up"]].copy()
+        fixed["pred"] = combine_and_smooth(
+            va, va["model_rank"].to_numpy(), va["anchor"].to_numpy(),
+            best["w"], best["span"])
+        fixed_ic, *_ = daily_rank_ic(fixed, date_idx=fixed_idx)
+        fixed_ae, *_ = daily_top_excess(fixed, date_idx=fixed_idx)
+        fixed_tv, _ = daily_turnover(fixed, date_idx=fixed_idx)
+        best["score"] = composite_score(fixed_ic, fixed_ae, fixed_tv)
+        del fixed
 
     va["pred"] = combine_and_smooth(va, va["model_rank"].to_numpy(),
                                     va["anchor"].to_numpy(), best["w"], best["span"])
