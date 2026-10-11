@@ -34,6 +34,6 @@
     "test_top10_share": 0.25344878367304213
   },
   "submission_rows": 1599600,
-  "tradable_submission": "submission_tradable.csv",
+  "tradable_submission": null,
   "note": "验证汇总包含选参窗口，不能视为独立最终留出成绩；测试集无Y。无后缀字段为竞赛口径（与官方 evaluate.py 一致），*_tradable 为无行情行（未上市/退市/停牌）pred 置为 -999 的可交易口径；top10_share 为竞赛口径下 Top10% 中无行情行的日均占比。"
 }

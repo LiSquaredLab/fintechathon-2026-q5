@@ -927,6 +927,7 @@ def main():
         inner_stop = tr_mask & (date_arr >= tr_d[stop_start])
         model.fit(
             X_all[inner_fit], y_all[inner_fit],
+            feature_name=FACTOR_COLS,
             eval_set=[(X_all[inner_stop], y_all[inner_stop])],
             eval_metric="l2",
             callbacks=[lgb.early_stopping(stopping_rounds=60, verbose=False),
@@ -935,7 +936,7 @@ def main():
         best_iter = model.best_iteration_
         stop_l2 = model.best_score_['valid_0']['l2']
         model = build_model(CFG["seed"] + i).set_params(n_estimators=best_iter)
-        model.fit(X_all[tr_mask], y_all[tr_mask])
+        model.fit(X_all[tr_mask], y_all[tr_mask], feature_name=FACTOR_COLS)
         model.selected_iterations_ = best_iter
         fold_models.append(model)
         oof_raw[va_mask] = model.predict(X_all[va_mask])
@@ -1091,7 +1092,7 @@ def main():
     else:
         log(f"  全量重训：{eligible.sum():,} 行，树数采用内层早停中位数 {final_iterations}")
         final_model = build_model(CFG["seed"]).set_params(n_estimators=final_iterations)
-        final_model.fit(X_all[eligible], y_all[eligible])
+        final_model.fit(X_all[eligible], y_all[eligible], feature_name=FACTOR_COLS)
         final_model.booster_.save_model(os.path.join(args.out_dir, 'model_final.txt'))
         del X_all, y_all, fold_models, train, base
         gc.collect()
