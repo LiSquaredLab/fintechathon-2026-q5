@@ -105,6 +105,7 @@ CFG = {
     # 选参会系统性偏向"高 IC 但高换手"的组合；而官方换手率项在 344 天上取平均，
     # 越靠近测试期的表现越有参考价值。0 = 用全部验证段。
     "tune_recent_days": 250,
+    "halted_pred": -999.0,               # 停牌 / 无成交股票的 pred（远低于 0~1 的正常值）
     "seed": 42,
 
     # 因子构建时，测试集前面挂的训练集历史长度（交易日数），
@@ -409,6 +410,32 @@ def training_mask(df: pd.DataFrame) -> np.ndarray:
     if CFG['drop_limit_down_in_train']:
         eligible &= df['flag_limit_down'] == 0
     return eligible.to_numpy()
+
+
+def halted_mask(df: pd.DataFrame) -> np.ndarray:
+    """
+    停牌 / 无成交判定：vol 或 amount 为 0 或缺失，或 close 缺失。
+
+    本数据集中停牌股的 vol、amount 是 NaN 而不是 0（测试集 vol==0 的行数为 0），
+    所以必须把缺失值也算进来，否则一行都匹配不到。
+    """
+    vol, amt = df["vol"], df["amount"]
+    halted = vol.isna() | amt.isna() | (vol <= 0) | (amt <= 0) | df["close"].isna()
+    return halted.to_numpy()
+
+
+def demote_halted(pred: np.ndarray, halted: np.ndarray) -> np.ndarray:
+    """
+    把停牌 / 无成交股票的 pred 压到 CFG['halted_pred']，使其不可能进入 Top10%。
+
+    这些股票当天无法买入，且特征每天不变：若留在 Top 组里一直不动，会人为压低
+    官方换手率。修复前测试期 Top10% 中有约 25% 是这类股票。
+    必须在 EMA 平滑之后调用：压低值不进入平滑，复牌后的预测不受影响。
+    用有限值而非 -inf：导出前的自检要求 pred 全部有限。
+    """
+    out = np.asarray(pred, dtype=np.float64).copy()
+    out[halted] = CFG["halted_pred"]
+    return out
 
 
 def load_test(path: str) -> pd.DataFrame:
@@ -893,6 +920,8 @@ def main():
 
     valid_mask = np.isfinite(oof_raw)          # 各折验证段行
     va = train.loc[valid_mask, ["ts_code", "trade_date", "y_ret_1d", "flag_limit_up"]].copy()
+    # 验证段与提交文件使用同一停牌规则，否则验证换手率会被停牌股压低、选参失真
+    halted_va = halted_mask(train.loc[valid_mask])
     va["raw_pred"] = oof_raw[valid_mask]
     va["anchor"] = anchor_rank_tr[valid_mask]
     # 模型预测转为截面百分位，与锚信号同量纲
@@ -905,9 +934,11 @@ def main():
 
     log(f"  验证段样本: {len(va):,} 行 | 交易日 {va['trade_date'].nunique()} 个 "
         f"({va['trade_date'].min()} ~ {va['trade_date'].max()})")
+    log(f"  其中停牌/无成交行: {int(halted_va.sum()):,} ({halted_va.mean():.2%})，"
+        f"pred 统一置为 {CFG['halted_pred']}")
 
     base = va.copy()
-    base["pred"] = base["model_rank"]
+    base["pred"] = demote_halted(base["model_rank"].to_numpy(), halted_va)
     base_metrics = evaluate_frame(base, tag="基线：纯模型预测（无平滑、无锚）",
                                  date_idx=date_idx_va)
 
@@ -950,7 +981,8 @@ def main():
             sm = smoothed[sp]
             for w in grid_w:
                 tmp = tmp_holder.copy()
-                tmp["pred"] = (1.0 - w) * sm + w * smoothed_anchor[sp]
+                tmp["pred"] = demote_halted((1.0 - w) * sm + w * smoothed_anchor[sp],
+                                            halted_va)
                 ic_m, *_ = daily_rank_ic(tmp, date_idx=tune_idx)
                 ae, *_ = daily_top_excess(tmp, date_idx=tune_idx)
                 tv, _ = daily_turnover(tmp, date_idx=tune_idx)
@@ -962,8 +994,10 @@ def main():
         log(f"  → 最优组合：anchor_weight = {best['w']}, smooth_span = {best['span']}, "
             f"选参窗口综合得分 = {best['score']:+.6f}")
 
-    va["pred"] = combine_and_smooth(va, va["model_rank"].to_numpy(),
-                                    va["anchor"].to_numpy(), best["w"], best["span"])
+    va["pred"] = demote_halted(combine_and_smooth(va, va["model_rank"].to_numpy(),
+                                                  va["anchor"].to_numpy(),
+                                                  best["w"], best["span"]),
+                               halted_va)
     if args.tune:
         del smoothed, smoothed_anchor, tmp_holder, tmp
         gc.collect()
@@ -1045,6 +1079,12 @@ def main():
         anchor_rank_te = anchor_signal(tst, date_idx_te)
         tst["pred"] = combine_and_smooth(tst, model_rank_te, anchor_rank_te,
                                          best["w"], best["span"])
+
+        # 停牌 / 无成交股票不可买入：平滑之后、导出之前把 pred 压到最低
+        halted_te = halted_mask(tst)
+        tst["pred"] = demote_halted(tst["pred"].to_numpy(), halted_te)
+        log(f"  停牌/无成交行 pred 置为 {CFG['halted_pred']}：{int(halted_te.sum()):,} 行 "
+            f"({halted_te.mean():.2%})")
 
         sub = tst[["ts_code", "trade_date", "pred"]].copy()
         sub["ts_code"] = sub["ts_code"].astype(str)
