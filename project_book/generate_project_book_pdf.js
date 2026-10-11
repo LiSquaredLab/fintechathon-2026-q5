@@ -9,6 +9,6 @@ const {chromium}=require('C:/Users/Lenovo/.cache/codex-runtimes/codex-primary-ru
  fs.writeFileSync(path.join(__dirname,'layout_audit.json'),JSON.stringify(audit,null,2));
  console.log(audit);
  if(audit.some(a=>a.contentBottom>a.footerTop-12 || a.overflow)) throw new Error('Page layout overflow; repair before PDF export');
- await page.pdf({path:path.join(__dirname,'245-5.pdf'),preferCSSPageSize:true,printBackground:true});
+ await page.pdf({path:path.join(__dirname,'245-赛题5.pdf'),preferCSSPageSize:true,printBackground:true});
  await browser.close();
 })();

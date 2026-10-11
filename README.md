@@ -139,3 +139,9 @@ python fintechathon_q5.py --ema_grid 0 3 5 8 12 20 30 40 50 60 --out_dir ema_exp
 ```
 
 该命令会按扩展网格复合分选出参数；采用 EMA20 的提交可用 `--tune 0 --anchor_weight 0 --smooth_span 20` 复现。固定参数模式现在也会在选参窗口记录对应得分。36 因子是基于已观察验证段筛选的候选，没有独立留出段；旧 26 因子版本可在提交历史中追溯。
+
+## 项目书
+
+项目书成品为 [`245-赛题5.pdf`](project_book/245-赛题5.pdf)，生成代码保存在 [`project_book/build_project_book.py`](project_book/build_project_book.py) 和 [`project_book/generate_project_book_pdf.js`](project_book/generate_project_book_pdf.js)。报告正文按课堂派要求使用五号宋体、1.5 倍行距，正文共 7 页，封面另计。
+
+报告对全验证分数、近期窗口和测试期可核对指标分开陈述；测试集没有标签，因此不把测试期 IC 或收益写成已验证结果。
