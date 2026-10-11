@@ -149,16 +149,17 @@ FACTOR_COLS = [
     # ---- Beta 代理 ----
     "f26_beta_proxy",        # 个股收益对"昨日截面中位收益"的 20 日滚动敏感度
     # ---- 补充形态、长期位置与截面排名特征 ----
-    "f27_ret_2d",
-    "f28_ret_60d",
-    "f29_intraday_ret",
-    "f30_upper_shadow",
-    "f31_lower_shadow",
-    "f32_body_ratio",
-    "f33_price_pos_20d",
-    "f34_price_pos_60d",
-    "f37_ret_1d_rank_pct",
-    "f38_ret_20d_rank_pct",
+    "f27_ret_2d",  # 2 日收益率
+    "f28_ret_60d",  # 60 日收益率
+    "f29_intraday_ret",  # close/open - 1
+    "f30_upper_shadow",  # 上影线 / close
+    "f31_lower_shadow",  # 下影线 / close
+    "f32_body_ratio",  # 有符号实体 / 当日高低区间
+    "f33_price_pos_20d",  # 收盘价在 20 日高低区间的位置
+    "f34_price_pos_60d",  # 收盘价在 60 日高低区间的位置
+    # f35/f36 为已弃用的涨跌停计数实验，保留空号以对应实验记录。
+    "f37_ret_1d_rank_pct",  # 1 日收益的当日截面百分位
+    "f38_ret_20d_rank_pct",  # 20 日收益的当日截面百分位
 ]
 
 # 用于构造"稳健动量锚"的因子（低噪声、时间自相关强 → 天然低换手）
@@ -854,6 +855,8 @@ def main():
                     help="稳健动量锚权重")
     ap.add_argument("--tune", type=int, default=1,
                     help="1 = 网格搜索 (anchor_weight, smooth_span) 取最优；0 = 用命令行给定值")
+    ap.add_argument("--ema_grid", type=int, nargs="+", default=[0, 3, 5, 8, 12, 20],
+                    help="EMA 搜索跨度；扩展实验可传 0 3 5 8 12 20 30 40 50 60")
     ap.add_argument("--tune_recent_days", type=int, default=CFG["tune_recent_days"],
                     help="仅用验证段末尾 N 个交易日选参；0 = 用全部验证段")
     ap.add_argument("--max_train_rows", type=int, default=0,
@@ -865,6 +868,8 @@ def main():
                     help="LightGBM 线程数；-1 = 全部 CPU 核心")
     ap.add_argument("--skip_submission", action="store_true", help="只做本地验证，不导出提交文件")
     args = ap.parse_args()
+    if any(sp < 0 for sp in args.ema_grid):
+        ap.error("--ema_grid 不能包含负数")
     CFG["n_jobs"] = args.n_jobs              # build_model() 从 CFG 读取线程数
 
     test_dir = args.test_dir or args.data_dir
@@ -1031,7 +1036,7 @@ def main():
         tune_idx = {d: date_idx_va[d] for d in all_va_dates if d in tune_dates}
 
         grid_w = [0.0, 0.15, 0.30, 0.45, 0.60, 0.75]
-        grid_span = [0, 3, 5, 8, 12, 20]
+        grid_span = sorted(set(args.ema_grid))
         log("  网格搜索（锚权重 w × 平滑跨度 span）— 仅在上述窗口上评估：")
         log(f"  {'w':>6} {'span':>5} {'RankIC':>10} {'年化超额':>11} "
             f"{'换手率':>9} {'(1-换手)':>10} {'综合得分':>11}")
