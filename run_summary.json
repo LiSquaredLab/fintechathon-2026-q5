@@ -1,0 +1,21 @@
+{
+  "parameters": {
+    "w": 0.0,
+    "span": 20,
+    "score": 0.299828224831889
+  },
+  "final_iterations": 115,
+  "validation": {
+    "ic_mean": 0.05186100815303049,
+    "ic_std": 0.12091631686344802,
+    "icir": 0.42889999876193413,
+    "ic_positive_ratio": 0.6956214689265536,
+    "annual_excess": 0.21174878639459851,
+    "top_annual": 0.2306209550952845,
+    "mean_turnover": 0.13612966558624387,
+    "final_score": 0.3434301395037186
+  },
+  "test_turnover": 0.2591508968225414,
+  "submission_rows": 1599600,
+  "note": "验证汇总包含选参窗口，不能视为独立最终留出成绩；测试集无Y。"
+}

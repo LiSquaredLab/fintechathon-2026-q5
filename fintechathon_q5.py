@@ -20,12 +20,11 @@
      与该股真实股价一致。因此均价偏离度因子用 (amount/vol)/close，
      并相对其自身 20 日均值取偏离；若照搬 "amount/(vol*100)/close" 会得到
      近似恒等于 0 的常数，因子完全失效（已在本地数据上验证）。
-  2. 训练集 2018-01-02 ~ 2024-12-31；测试集 2025-01-02 ~ 2025-01-08，仅 5 个交易日。
+  2. 训练集 2018-01-02 ~ 2024-12-31；测试集 2025-01-02 ~ 2026-06-08，共 344 个交易日。
   3. 训练集尾部 y_ret_1d 缺失率约 30%（全样本约 14.5%），缺失与停牌/退市/涨跌停相关，
      建模前必须剔除。
-  4. 测试期极短（5 日）→ 官方换手率项 (1-turnover)×0.3 的权重被极度放大：
-     换手 0.95 连吃 4 天 → 0.95^4≈0.815；换手 0.20 连吃 4 天 → 0.80^4≈0.41。
-     这一项几乎单独决定排名，故本脚本把"压低换手率"作为一等目标。
+  4. 测试期覆盖 344 个交易日，官方换手率项 (1-turnover)×0.3 会持续影响排名，
+     故本脚本把"压低换手率"作为一等目标。
 
 --------------------------------------------------------------------------------
 【与官方 evaluate.py 的严格对齐点】（逐条核对过）
@@ -63,6 +62,8 @@ import os
 import sys
 import time
 import warnings
+import json
+import gc
 
 import numpy as np
 import pandas as pd
@@ -101,7 +102,7 @@ CFG = {
     # 参数搜索窗口：只用在验证段末尾这段时间上的指标选参。
     # 理由：本数据集训练集到 2024-12-31 结束，测试期是 2025-01-02 起连续 344 个交易日。
     # 验证段的早期（2019~2021）与测试期隔着 3 年以上的市场结构变化，用全段平均
-    # 选参会系统性偏向"高 IC 但高换手"的组合；而官方换手率项要在 344 天里连乘，
+    # 选参会系统性偏向"高 IC 但高换手"的组合；而官方换手率项在 344 天上取平均，
     # 越靠近测试期的表现越有参考价值。0 = 用全部验证段。
     "tune_recent_days": 250,
     "seed": 42,
@@ -234,10 +235,12 @@ def build_factors(raw: pd.DataFrame) -> pd.DataFrame:
         return out.reset_index(level=0, drop=True).sort_index()
 
     # ---------- 1) 动量 / 反转 ----------
-    df["f01_ret_1d"] = c.pct_change(1)
-    df["f02_ret_5d"] = c.pct_change(5)
-    df["f03_ret_10d"] = c.pct_change(10)
-    df["f04_ret_20d"] = c.pct_change(20)
+    # 必须沿每只股票自己的时间轴计算，不能让股票边界串入上一只股票的价格。
+    # 显式关闭缺失值前值填充，避免停牌/缺失价格制造人工收益。
+    df["f01_ret_1d"] = g["close"].pct_change(1, fill_method=None)
+    df["f02_ret_5d"] = g["close"].pct_change(5, fill_method=None)
+    df["f03_ret_10d"] = g["close"].pct_change(10, fill_method=None)
+    df["f04_ret_20d"] = g["close"].pct_change(20, fill_method=None)
     df["f05_rev_5d"] = -df["f02_ret_5d"]
 
     # ---------- 2) 日内形态 ----------
@@ -350,7 +353,11 @@ def anchor_signal(df: pd.DataFrame, date_idx: dict,
     cols = [c for c in anchor_cols if c in df.columns]
     anchor = np.zeros(len(df), dtype=np.float64)
     for c in cols:
-        anchor += cs_rank(df[c].to_numpy(dtype=np.float64))
+        values = df[c].to_numpy(dtype=np.float64)
+        ranked = np.zeros(len(df), dtype=np.float64)
+        for idx in date_idx.values():
+            ranked[idx] = cs_rank(values[idx])
+        anchor += ranked
     anchor /= max(len(cols), 1)
     return anchor
 
@@ -372,8 +379,8 @@ def _coerce(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_train(path: str) -> pd.DataFrame:
-    """加载训练集：清洗标签缺失 + 价格异常 + 涨停（流动性陷阱）样本。"""
+def load_train(path: str, history_days: int = 0):
+    """加载完整行情和原始尾部历史；清洗条件只用于模型拟合。"""
     t = time.time()
     log(f"读取训练集: {path}")
     df = read_csv_auto(path)
@@ -381,34 +388,27 @@ def load_train(path: str) -> pd.DataFrame:
         f"股票 {df['ts_code'].nunique():,} 只 | 用时 {time.time() - t:.1f}s")
     df = _coerce(df)
 
-    n0 = len(df)
-    # ---- 清洗 1：剔除标签缺失（全样本约 14.5%，训练集尾部约 30%）----
-    df = df[df["y_ret_1d"].notna()]
-    log(f"  剔除 y_ret_1d 缺失: -{n0 - len(df):,} 行 ({(n0 - len(df)) / n0:.2%})")
-    if len(df) == 0:
-        log("  错误: 清洗后无剩余样本，请检查数据文件")
-        sys.exit(1)
+    # 测试期因子需要训练集尾部的连续原始行情。保留这段未清洗历史，
+    # 避免删除标签缺失或涨跌停行后破坏滚动窗口的时间连续性。
+    raw_history = None
+    if history_days:
+        raw_dates = np.sort(df["trade_date"].unique())
+        hist_start = raw_dates[-history_days] if len(raw_dates) > history_days else raw_dates[0]
+        history_cols = ["ts_code", "trade_date", "open", "high", "low", "close",
+                        "vol", "amount", "flag_limit_up", "flag_limit_down"]
+        raw_history = df.loc[df["trade_date"] >= hist_start, history_cols].copy()
 
-    # ---- 清洗 2：价格 / 成交异常 ----
-    n1 = len(df)
-    df = df[(df["close"] > 0) & (df["high"] >= df["low"]) &
-            (df["vol"] >= 0) & (df["amount"] >= 0)]
-    log(f"  剔除价格/成交异常: -{n1 - len(df):,} 行")
+    # 先保留完整行情计算滚动因子；清洗只作为模型拟合的掩码。
+    return (df, raw_history) if history_days else df
 
-    # ---- 清洗 3：涨停（无法买入的样本，会导致虚高收益并污染因子分布）----
-    n2 = len(df)
-    df = df[df["flag_limit_up"] == 0]
-    log(f"  剔除涨停样本: -{n2 - len(df):,} 行")
 
-    # ---- 清洗 4：跌停（次日收益同样失真，训练时一并剔除）----
-    if CFG["drop_limit_down_in_train"]:
-        n3 = len(df)
-        df = df[df["flag_limit_down"] == 0]
-        log(f"  剔除跌停样本: -{n3 - len(df):,} 行")
-
-    df = df.reset_index(drop=True)
-    log(f"  清洗后: {len(df):,} 行 | 交易日 {df['trade_date'].nunique()} 个")
-    return df
+def training_mask(df: pd.DataFrame) -> np.ndarray:
+    eligible = (df['y_ret_1d'].notna() & (df['close'] > 0) &
+                (df['high'] >= df['low']) & (df['vol'] >= 0) &
+                (df['amount'] >= 0) & (df['flag_limit_up'] == 0))
+    if CFG['drop_limit_down_in_train']:
+        eligible &= df['flag_limit_down'] == 0
+    return eligible.to_numpy()
 
 
 def load_test(path: str) -> pd.DataFrame:
@@ -585,7 +585,7 @@ def build_model(seed: int) -> lgb.LGBMRegressor:
         colsample_bytree=0.8,
         reg_alpha=0.5,
         reg_lambda=5.0,
-        n_jobs=-1,
+        n_jobs=8,
         random_state=seed,
         verbose=-1,
     )
@@ -796,7 +796,12 @@ def main():
     log("=" * 78)
     log("步骤 1/7  数据加载与交易限制处理（剔标签缺失 / 涨停 / 跌停）")
     log("=" * 78)
-    train = load_train(train_path)
+    train_result = load_train(train_path, history_days=CFG["test_history_days"] if test_available else 0)
+    if test_available:
+        train, raw_history = train_result
+    else:
+        train = train_result
+        raw_history = None
     if args.max_train_rows and args.max_train_rows < len(train):
         train = train.tail(args.max_train_rows).reset_index(drop=True)
         log(f"  [调试] 截取末尾 {len(train):,} 行")
@@ -834,13 +839,15 @@ def main():
     date_arr = train["trade_date"].to_numpy()
     X_all = train[FACTOR_COLS].to_numpy(dtype=np.float32)
     y_all = train["y_ret_1d"].to_numpy(dtype=np.float64)
+    eligible = training_mask(train)
+    log(f"  模型可训练样本: {eligible.sum():,} / {len(train):,}；验证保留全市场口径")
 
     oof_raw = np.full(len(train), np.nan, dtype=np.float64)
     importance_sum = pd.Series(0.0, index=FACTOR_COLS)
     fold_models = []
 
     for i, (tr_d, va_d) in enumerate(folds, 1):
-        tr_mask = (date_arr >= tr_d[0]) & (date_arr <= tr_d[-1])
+        tr_mask = (date_arr >= tr_d[0]) & (date_arr <= tr_d[-1]) & eligible
         va_mask = (date_arr >= va_d[0]) & (date_arr <= va_d[-1])
         if tr_mask.sum() < 1000 or va_mask.sum() < 100:
             log(f"  Fold {i}: 样本不足，跳过")
@@ -848,25 +855,36 @@ def main():
 
         t = time.time()
         model = build_model(CFG["seed"] + i)
+        # 在外层训练期末尾留出60日供早停，外层验证期不参与选树数。
+        stop_start = max(1, len(tr_d) - 60)
+        inner_end = max(1, stop_start - args.embargo_days)
+        inner_fit = tr_mask & (date_arr <= tr_d[inner_end - 1])
+        inner_stop = tr_mask & (date_arr >= tr_d[stop_start])
         model.fit(
-            X_all[tr_mask], y_all[tr_mask],
-            eval_set=[(X_all[va_mask], y_all[va_mask])],
+            X_all[inner_fit], y_all[inner_fit],
+            eval_set=[(X_all[inner_stop], y_all[inner_stop])],
             eval_metric="l2",
             callbacks=[lgb.early_stopping(stopping_rounds=60, verbose=False),
                        lgb.log_evaluation(period=0)],
         )
+        best_iter = model.best_iteration_
+        stop_l2 = model.best_score_['valid_0']['l2']
+        model = build_model(CFG["seed"] + i).set_params(n_estimators=best_iter)
+        model.fit(X_all[tr_mask], y_all[tr_mask])
+        model.selected_iterations_ = best_iter
         fold_models.append(model)
         oof_raw[va_mask] = model.predict(X_all[va_mask])
         importance_sum += pd.Series(model.booster_.feature_importance("gain"),
                                     index=FACTOR_COLS)
         log(f"  Fold {i}: 训练 {int(tr_mask.sum()):,} 行 | 验证 {int(va_mask.sum()):,} 行 | "
-            f"best_iter = {model.best_iteration_} | "
-            f"valid_l2 = {model.best_score_['valid_0']['l2']:.6f} | 用时 {time.time() - t:.1f}s")
+            f"best_iter = {best_iter} | "
+            f"inner_stop_l2 = {stop_l2:.6f} | 用时 {time.time() - t:.1f}s")
 
     if not fold_models:
         log("错误: 没有任何一折成功训练，请检查数据量或减小 embargo/folds")
         sys.exit(1)
     importance_mean = importance_sum / len(fold_models)
+    final_iterations = int(np.median([m.selected_iterations_ for m in fold_models]))
 
     # ------------------------------------------------------------------
     log("=" * 78)
@@ -894,9 +912,10 @@ def main():
                                  date_idx=date_idx_va)
 
     best = {"w": args.anchor_weight, "span": args.smooth_span, "score": -1e18}
+    all_va_dates = sorted(date_idx_va)
     if args.tune:
         # ---- 选参窗口：只取验证段末尾的交易日 ----
-        # 官方换手率项在测试期要连乘 344 天，且验证段早期（2019~2021）与测试期
+        # 官方换手率项在测试期对 344 天取平均，且验证段早期（2019~2021）与测试期
         # （2025 年起）相隔多年、市场结构不同，全段平均会系统性偏向高 IC 高换手组合。
         # 因此选参只看最靠近测试期的那一段样本外表现。
         all_va_dates = sorted(date_idx_va)
@@ -917,20 +936,21 @@ def main():
             f"{'换手率':>9} {'(1-换手)':>10} {'综合得分':>11}")
 
         # 预计算：对每个 span 只做一次 EMA 平滑。
-        # 平滑是线性算子且 anchor 不参与平滑，故
-        #   smooth((1-w)·rank + w·anchor) = (1-w)·smooth(rank) + w·anchor
+        # 两个信号均平滑，与最终 combine_and_smooth 完全一致：
+        # smooth((1-w)·rank + w·anchor) = (1-w)·smooth(rank) + w·smooth(anchor)
         # 于是每个 span 只需平滑一次，按 w 混合即可，省掉 6 倍重复计算。
         mr = va["model_rank"].to_numpy()
         anc = va["anchor"].to_numpy()
         base_cols = ["ts_code", "trade_date", "y_ret_1d", "flag_limit_up"]
         smoothed = {sp: apply_smoothing(va, mr, sp) for sp in grid_span}
+        smoothed_anchor = {sp: apply_smoothing(va, anc, sp) for sp in grid_span}
         tmp_holder = va[base_cols].copy()
 
         for sp in grid_span:
             sm = smoothed[sp]
             for w in grid_w:
                 tmp = tmp_holder.copy()
-                tmp["pred"] = (1.0 - w) * sm + w * anc
+                tmp["pred"] = (1.0 - w) * sm + w * smoothed_anchor[sp]
                 ic_m, *_ = daily_rank_ic(tmp, date_idx=tune_idx)
                 ae, *_ = daily_top_excess(tmp, date_idx=tune_idx)
                 tv, _ = daily_turnover(tmp, date_idx=tune_idx)
@@ -944,6 +964,9 @@ def main():
 
     va["pred"] = combine_and_smooth(va, va["model_rank"].to_numpy(),
                                     va["anchor"].to_numpy(), best["w"], best["span"])
+    if args.tune:
+        del smoothed, smoothed_anchor, tmp_holder, tmp
+        gc.collect()
     metrics = evaluate_frame(va, tag=f"调优后预测（w={best['w']}, span={best['span']}）",
                              date_idx=date_idx_va)
     log(f"  提升对比（全验证段）：综合得分 {base_metrics['final_score']:+.6f} → "
@@ -985,18 +1008,21 @@ def main():
     if args.skip_submission or not test_available:
         log("  跳过（--skip_submission 或测试集不存在）")
     else:
+        log(f"  全量重训：{eligible.sum():,} 行，树数采用内层早停中位数 {final_iterations}")
+        final_model = build_model(CFG["seed"]).set_params(n_estimators=final_iterations)
+        final_model.fit(X_all[eligible], y_all[eligible])
+        final_model.booster_.save_model(os.path.join(args.out_dir, 'model_final.txt'))
+        del X_all, y_all, fold_models, train, base
+        gc.collect()
         test = load_test(test_path)
 
         # 把"训练集尾部历史 + 测试集"拼接后统一计算因子：
         # 测试期首日若缺前 20 个交易日历史，MA20/20日波动率等长周期因子会整列为 NaN，
         # 等于丢掉这批因子。拼接口径只用到测试日之前的历史，不产生任何泄露；
         # 拼接边界上，训练集尾部与测试集首日之间的滚动窗口正好接续。
-        hist_start = all_dates[-CFG["test_history_days"]] if \
-            len(all_dates) > CFG["test_history_days"] else all_dates[0]
         need = ["ts_code", "trade_date", "open", "high", "low", "close", "vol", "amount",
                 "flag_limit_up", "flag_limit_down"]
-        hist = pd.concat([train.loc[train["trade_date"] >= hist_start, need],
-                          test[need]], ignore_index=True)
+        hist = pd.concat([raw_history, test[need]], ignore_index=True)
         log(f"  拼接历史用于因子计算：{len(hist):,} 行 "
             f"（含测试期前 {CFG['test_history_days']} 个交易日的训练集尾部）")
 
@@ -1008,10 +1034,10 @@ def main():
         tst = cs_zscore(tst, FACTOR_COLS, date_idx_te)   # 与训练完全一致的标准化口径
         log(f"  测试集因子构建完成：{len(tst):,} 行 × {len(FACTOR_COLS)} 因子")
 
-        # 折模型等权集成：单模型方差大，集成后截面排序更稳（也更低换手）
+        # 使用全量重训模型在测试集上预测，避免把外层验证模型直接当最终模型
         X_test = tst[FACTOR_COLS].to_numpy(dtype=np.float32)
-        preds = np.mean([m.predict(X_test) for m in fold_models], axis=0)
-        log(f"  {len(fold_models)} 个折模型等权集成预测完成")
+        preds = final_model.predict(X_test)
+        log("  全量重训模型预测完成")
 
         model_rank_te = np.empty(len(tst), dtype=np.float64)
         for idx in date_idx_te.values():
@@ -1037,17 +1063,22 @@ def main():
         sub["ts_code"] = sub["ts_code"].astype(str)
         key_a = set(zip(sub["ts_code"], sub["trade_date"].astype(str)))
         key_b = set(zip(test["ts_code"].astype(str), test["trade_date"].astype(str)))
-        if key_a == key_b:
+        if key_a == key_b and len(sub) == len(test) and not sub.duplicated(['ts_code', 'trade_date']).any() and np.isfinite(sub['pred']).all():
             log("  [自检通过] 提交键值与测试集 X 完全一致，无缺失、无重复")
         else:
-            log(f"  [警告] 键值不一致：仅提交 {len(key_a - key_b)} 例 | "
-                f"仅测试集 {len(key_b - key_a)} 例")
+            raise ValueError('提交键值、重复记录或非有限预测检查失败')
 
         # 测试期预测换手率：直接复现官方换手率口径（剔涨停 → 按 pred 降序取前 10%）。
         # 测试集无 Y 标签，因此这是纯预测侧指标，可与官方公式逐字对照。
         tv_te, _ = daily_turnover(tst, date_idx=date_idx_te)
         log(f"  测试期预测换手率（剔涨停口径，{tst['trade_date'].nunique()} 个交易日）："
             f"{tv_te:.4f}")
+        summary = {'parameters': best, 'final_iterations': final_iterations,
+                   'validation': {k: v for k, v in metrics.items() if np.isscalar(v)},
+                   'test_turnover': tv_te, 'submission_rows': len(sub),
+                   'note': '验证汇总包含选参窗口，不能视为独立最终留出成绩；测试集无Y。'}
+        with open(os.path.join(args.out_dir, 'run_summary.json'), 'w', encoding='utf-8') as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
         log("  该项在综合得分中的贡献敏感性（换手率每变化 0.05 对总分的直接影响）：")
         for delta in (-0.10, -0.05, 0.0, 0.05):
             tv_x = min(max(tv_te + delta, 0.0), 1.0)
@@ -1061,3 +1092,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
