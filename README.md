@@ -135,7 +135,7 @@ python fintechathon_q5.py --max_train_rows 3000000                      # 小样
 ## EMA 对照实验复现
 
 ```bash
-python fintechathon_q5.py --ema_grid 0 3 5 8 12 20 30 40 50 60 --out_dir ema_experiment
+python fintechathon_q5.py --ema_grid 0 3 5 8 12 20 30 40 50 60 --out_dir ema_experiment --skip_submission
 ```
 
 该命令会按扩展网格复合分选出参数；采用 EMA20 的提交可用 `--tune 0 --anchor_weight 0 --smooth_span 20` 复现。固定参数模式现在也会在选参窗口记录对应得分。36 因子是基于已观察验证段筛选的候选，没有独立留出段；旧 26 因子版本可在提交历史中追溯。
