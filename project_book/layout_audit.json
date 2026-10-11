@@ -1,0 +1,50 @@
+[
+  {
+    "page": 1,
+    "contentBottom": 536.546875,
+    "footerTop": 1070,
+    "overflow": false
+  },
+  {
+    "page": 2,
+    "contentBottom": 646.296875,
+    "footerTop": 1070,
+    "overflow": false
+  },
+  {
+    "page": 3,
+    "contentBottom": 944.296875,
+    "footerTop": 1070,
+    "overflow": false
+  },
+  {
+    "page": 4,
+    "contentBottom": 876.046875,
+    "footerTop": 1070,
+    "overflow": false
+  },
+  {
+    "page": 5,
+    "contentBottom": 1002.796875,
+    "footerTop": 1070,
+    "overflow": false
+  },
+  {
+    "page": 6,
+    "contentBottom": 949.296875,
+    "footerTop": 1070,
+    "overflow": false
+  },
+  {
+    "page": 7,
+    "contentBottom": 887.046875,
+    "footerTop": 1070,
+    "overflow": false
+  },
+  {
+    "page": 8,
+    "contentBottom": 797.296875,
+    "footerTop": 1070,
+    "overflow": false
+  }
+]
