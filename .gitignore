@@ -13,6 +13,8 @@
 # 提交产物：submission.csv（约 62MB）已纳入仓库，保留这份确切成绩的快照。
 # 注意：每次重跑 fintechathon_q5.py 都会生成新的 62MB 版本，使仓库历史持续增大。
 run_final.log
+# 可交易版提交（--demote_halted 生成，约 58MB，可一键复现），不纳入 Git
+submission_tradable.csv
 
 # 含队员个人信息的材料（姓名/学校/联系方式等）
 teaminformationform.xlsx
