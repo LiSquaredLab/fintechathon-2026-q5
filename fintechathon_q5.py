@@ -148,6 +148,17 @@ FACTOR_COLS = [
     "f24_vol_std_20d",       # 成交量 20 日波动率
     # ---- Beta 代理 ----
     "f26_beta_proxy",        # 个股收益对"昨日截面中位收益"的 20 日滚动敏感度
+    # ---- 补充形态、长期位置与截面排名特征 ----
+    "f27_ret_2d",
+    "f28_ret_60d",
+    "f29_intraday_ret",
+    "f30_upper_shadow",
+    "f31_lower_shadow",
+    "f32_body_ratio",
+    "f33_price_pos_20d",
+    "f34_price_pos_60d",
+    "f37_ret_1d_rank_pct",
+    "f38_ret_20d_rank_pct",
 ]
 
 # 用于构造"稳健动量锚"的因子（低噪声、时间自相关强 → 天然低换手）
@@ -309,6 +320,27 @@ def build_factors(raw: pd.DataFrame) -> pd.DataFrame:
         - roll(med_lag, 20, 10, "mean") ** 2
     df["f26_beta_proxy"] = cov / (var.abs() + eps)
     df.drop(columns=["_cs_med_ret"], inplace=True)
+
+    # ---------- 7) 补充特征：形态、长期位置与截面排名 ----------
+    df["f27_ret_2d"] = g["close"].pct_change(2, fill_method=None)
+    df["f28_ret_60d"] = g["close"].pct_change(60, fill_method=None)
+    df["f29_intraday_ret"] = c / (o + eps) - 1.0
+    df["f30_upper_shadow"] = (h - np.maximum(o, c)) / (c + eps)
+    df["f31_lower_shadow"] = (np.minimum(o, c) - lo) / (c + eps)
+    df["f32_body_ratio"] = (c - o) / (h - lo + eps)
+
+    low20 = roll(lo, 20, 10, "min")
+    high20 = roll(h, 20, 10, "max")
+    low60 = roll(lo, 60, 30, "min")
+    high60 = roll(h, 60, 30, "max")
+    df["f33_price_pos_20d"] = (c - low20) / (high20 - low20 + eps)
+    df["f34_price_pos_60d"] = (c - low60) / (high60 - low60 + eps)
+
+    # 截面百分位是对逐日 Z-Score 的补充，仍只使用当日可见横截面。
+    df["f37_ret_1d_rank_pct"] = df["f01_ret_1d"].groupby(
+        df["trade_date"], sort=False).rank(pct=True, method="average")
+    df["f38_ret_20d_rank_pct"] = df["f04_ret_20d"].groupby(
+        df["trade_date"], sort=False).rank(pct=True, method="average")
 
     # inf → NaN，交给标准化阶段按当日截面中位数填充
     for col in FACTOR_COLS:
