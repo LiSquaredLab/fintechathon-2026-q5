@@ -15,7 +15,25 @@
     "mean_turnover": 0.13612966558624387,
     "final_score": 0.3434301395037186
   },
+  "validation_tradable": {
+    "ic_mean": 0.05188349304313547,
+    "ic_std": 0.12094309672152924,
+    "icir": 0.428990942431356,
+    "ic_positive_ratio": 0.6927966101694916,
+    "annual_excess": 0.21241679886023165,
+    "top_annual": 0.23128896756091769,
+    "mean_turnover": 0.29217288561545346,
+    "final_score": 0.29682657119068767
+  },
   "test_turnover": 0.2591508968225414,
+  "test_turnover_tradable": 0.3032415303071682,
+  "halted": {
+    "validation_row_share": 0.12158435088998239,
+    "validation_top10_share": 0.6885856765570963,
+    "test_row_share": 0.028034508627156788,
+    "test_top10_share": 0.25344878367304213
+  },
   "submission_rows": 1599600,
-  "note": "验证汇总包含选参窗口，不能视为独立最终留出成绩；测试集无Y。"
+  "tradable_submission": null,
+  "note": "验证汇总包含选参窗口，不能视为独立最终留出成绩；测试集无Y。无后缀字段为竞赛口径（与官方 evaluate.py 一致），*_tradable 为无行情行（未上市/退市/停牌）pred 置为 -999 的可交易口径；top10_share 为竞赛口径下 Top10% 中无行情行的日均占比。"
 }

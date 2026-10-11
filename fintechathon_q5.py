@@ -105,6 +105,8 @@ CFG = {
     # 选参会系统性偏向"高 IC 但高换手"的组合；而官方换手率项在 344 天上取平均，
     # 越靠近测试期的表现越有参考价值。0 = 用全部验证段。
     "tune_recent_days": 250,
+    "halted_pred": -999.0,               # 可交易口径下无行情行（未上市/退市/停牌）的 pred（远低于 0~1 的正常值）
+    "n_jobs": -1,                        # LightGBM 线程数，-1 = 全部 CPU 核心（--n_jobs 可覆盖）
     "seed": 42,
 
     # 因子构建时，测试集前面挂的训练集历史长度（交易日数），
@@ -411,6 +413,55 @@ def training_mask(df: pd.DataFrame) -> np.ndarray:
     return eligible.to_numpy()
 
 
+def halted_mask(df: pd.DataFrame) -> np.ndarray:
+    """
+    无行情判定（下文统称"无行情行"）：vol 或 amount 为 0 或缺失，或 close 缺失。
+
+    数据是"全部 ts_code × 全部交易日"的满面板，无行情行大多是占位行而非停牌：
+    验证段 95.4% 是上市前、3.1% 是退市后、只有 1.5% 是区间内停牌；测试期分别为
+    74.6% / 17.6% / 7.8%。这类行的 vol、amount 是 NaN 而不是 0（测试集 vol==0 的
+    行数为 0），所以必须把缺失值也算进来，否则一行都匹配不到。
+    """
+    vol, amt = df["vol"], df["amount"]
+    halted = vol.isna() | amt.isna() | (vol <= 0) | (amt <= 0) | df["close"].isna()
+    return halted.to_numpy()
+
+
+def demote_halted(pred: np.ndarray, halted: np.ndarray) -> np.ndarray:
+    """
+    可交易口径：把无行情行（未上市/退市/停牌）的 pred 压到 CFG['halted_pred']，使其不可能进入 Top10%。
+
+    只用于可交易版本（submission_tradable.csv 与 *_tradable 指标），不用于竞赛提交：
+    官方评分只剔除涨停股，不剔除无行情行；而 IC 与 Top 组超额只用有标签的行，无行情行
+    几乎都没有标签，所以这一处理对竞赛得分只会通过换手率项产生净损失。
+    这是交易约束，不是更准确的收益预测。
+    必须在 EMA 平滑之后调用：压低值不进入平滑，复牌后的预测不受影响。
+    用有限值而非 -inf：导出前的自检要求 pred 全部有限。
+    """
+    out = np.asarray(pred, dtype=np.float64).copy()
+    out[halted] = CFG["halted_pred"]
+    return out
+
+
+def top_halted_share(df: pd.DataFrame, halted: np.ndarray, pred_col: str = "pred",
+                     date_idx=None, top_ratio: float = 0.10, min_n: int = 100) -> float:
+    """官方换手率口径下（剔涨停、按 pred 降序取前 10%），Top 组中无行情行的日均占比。"""
+    if date_idx is None:
+        date_idx = date_indices(df["trade_date"].to_numpy())
+    pred = df[pred_col].to_numpy(dtype=np.float64)
+    lim = df["flag_limit_up"].to_numpy()
+    step = int(round(1.0 / top_ratio))
+    shares = []
+    for d in sorted(date_idx):
+        idx = date_idx[d]
+        idx = idx[lim[idx] == 0]
+        if idx.size < min_n:
+            continue
+        order = idx[np.argsort(-pred[idx], kind="stable")]
+        shares.append(halted[order[:max(order.size // step, 1)]].mean())
+    return float(np.mean(shares)) if shares else 0.0
+
+
 def load_test(path: str) -> pd.DataFrame:
     """加载测试集 X（不含标签）。"""
     log(f"读取测试集: {path}")
@@ -585,7 +636,7 @@ def build_model(seed: int) -> lgb.LGBMRegressor:
         colsample_bytree=0.8,
         reg_alpha=0.5,
         reg_lambda=5.0,
-        n_jobs=8,
+        n_jobs=CFG["n_jobs"],
         random_state=seed,
         verbose=-1,
     )
@@ -775,8 +826,14 @@ def main():
                     help="仅用验证段末尾 N 个交易日选参；0 = 用全部验证段")
     ap.add_argument("--max_train_rows", type=int, default=0,
                     help="调试用：仅取末尾 N 行训练（0 = 全量）")
+    ap.add_argument("--demote_halted", action="store_true",
+                    help="额外导出可交易版 submission_tradable.csv（无行情行：未上市/退市/停牌，pred 置为 -999）；"
+                         "竞赛版 submission.csv 不受影响")
+    ap.add_argument("--n_jobs", type=int, default=CFG["n_jobs"],
+                    help="LightGBM 线程数；-1 = 全部 CPU 核心")
     ap.add_argument("--skip_submission", action="store_true", help="只做本地验证，不导出提交文件")
     args = ap.parse_args()
+    CFG["n_jobs"] = args.n_jobs              # build_model() 从 CFG 读取线程数
 
     test_dir = args.test_dir or args.data_dir
     os.makedirs(args.out_dir, exist_ok=True)
@@ -803,8 +860,16 @@ def main():
         train = train_result
         raw_history = None
     if args.max_train_rows and args.max_train_rows < len(train):
-        train = train.tail(args.max_train_rows).reset_index(drop=True)
-        log(f"  [调试] 截取末尾 {len(train):,} 行")
+        # 原始数据按股票分块存放，tail() 截到的是排在最后几只股票的全部历史，
+        # 而不是全市场最近的交易日。改为从最近的交易日往前取整日，直到行数
+        # 达到 max_train_rows，保证每个交易日都是完整截面（截面标准化与评分需要）。
+        rows_per_day = train.groupby("trade_date").size().sort_index(ascending=False)
+        n_days = int(np.searchsorted(rows_per_day.cumsum().to_numpy(), args.max_train_rows)) + 1
+        keep_dates = rows_per_day.index[:n_days]
+        train = train[train["trade_date"].isin(keep_dates)].reset_index(drop=True)
+        log(f"  [调试] 截取最近 {len(keep_dates)} 个交易日 "
+            f"({keep_dates.min()} ~ {keep_dates.max()})：{len(train):,} 行 | "
+            f"股票 {train['ts_code'].nunique():,} 只")
 
     # ------------------------------------------------------------------
     log("=" * 78)
@@ -862,6 +927,7 @@ def main():
         inner_stop = tr_mask & (date_arr >= tr_d[stop_start])
         model.fit(
             X_all[inner_fit], y_all[inner_fit],
+            feature_name=FACTOR_COLS,
             eval_set=[(X_all[inner_stop], y_all[inner_stop])],
             eval_metric="l2",
             callbacks=[lgb.early_stopping(stopping_rounds=60, verbose=False),
@@ -870,7 +936,7 @@ def main():
         best_iter = model.best_iteration_
         stop_l2 = model.best_score_['valid_0']['l2']
         model = build_model(CFG["seed"] + i).set_params(n_estimators=best_iter)
-        model.fit(X_all[tr_mask], y_all[tr_mask])
+        model.fit(X_all[tr_mask], y_all[tr_mask], feature_name=FACTOR_COLS)
         model.selected_iterations_ = best_iter
         fold_models.append(model)
         oof_raw[va_mask] = model.predict(X_all[va_mask])
@@ -893,6 +959,8 @@ def main():
 
     valid_mask = np.isfinite(oof_raw)          # 各折验证段行
     va = train.loc[valid_mask, ["ts_code", "trade_date", "y_ret_1d", "flag_limit_up"]].copy()
+    # 无行情行标记：竞赛口径不使用，只用于计算可交易口径与 Top 组中的占比
+    halted_va = halted_mask(train.loc[valid_mask])
     va["raw_pred"] = oof_raw[valid_mask]
     va["anchor"] = anchor_rank_tr[valid_mask]
     # 模型预测转为截面百分位，与锚信号同量纲
@@ -905,6 +973,7 @@ def main():
 
     log(f"  验证段样本: {len(va):,} 行 | 交易日 {va['trade_date'].nunique()} 个 "
         f"({va['trade_date'].min()} ~ {va['trade_date'].max()})")
+    log(f"  其中无行情行（未上市/退市/停牌）: {int(halted_va.sum()):,} ({halted_va.mean():.2%})")
 
     base = va.copy()
     base["pred"] = base["model_rank"]
@@ -973,6 +1042,19 @@ def main():
         f"{metrics['final_score']:+.6f} | 换手率 {base_metrics['mean_turnover']:.4f} → "
         f"{metrics['mean_turnover']:.4f}")
 
+    # ---- 可交易口径：无行情行 pred 置为 -999 ----
+    # 选参与图表都用上面的竞赛口径；这里只是并列报告。官方 IC 与 Top 组超额只用
+    # 有标签的行，而无行情行几乎都没有标签，所以两种口径的差别几乎全在换手率上。
+    halted_top_va = top_halted_share(va, halted_va, date_idx=date_idx_va)
+    va_tradable = va[["ts_code", "trade_date", "y_ret_1d", "flag_limit_up"]].copy()
+    va_tradable["pred"] = demote_halted(va["pred"].to_numpy(), halted_va)
+    metrics_tradable = evaluate_frame(va_tradable, date_idx=date_idx_va,
+                                      tag="可交易口径（无行情行：未上市/退市/停牌，pred 置为 -999）")
+    del va_tradable
+    log(f"  竞赛口径下 Top10% 中无行情行日均占比：{halted_top_va:.2%}")
+    log(f"  换手率：竞赛口径 {metrics['mean_turnover']:.4f} | "
+        f"可交易口径 {metrics_tradable['mean_turnover']:.4f}")
+
     # ---- 分时段体检：看清信号的时序衰减与换手稳定性 ----
     # 测试期紧接训练集尾部，因此最后一段的样本外表现最有参考价值。
     log("\n  分时段样本外表现（同一套参数，看信号是否随时间衰减）：")
@@ -1010,7 +1092,7 @@ def main():
     else:
         log(f"  全量重训：{eligible.sum():,} 行，树数采用内层早停中位数 {final_iterations}")
         final_model = build_model(CFG["seed"]).set_params(n_estimators=final_iterations)
-        final_model.fit(X_all[eligible], y_all[eligible])
+        final_model.fit(X_all[eligible], y_all[eligible], feature_name=FACTOR_COLS)
         final_model.booster_.save_model(os.path.join(args.out_dir, 'model_final.txt'))
         del X_all, y_all, fold_models, train, base
         gc.collect()
@@ -1046,37 +1128,65 @@ def main():
         tst["pred"] = combine_and_smooth(tst, model_rank_te, anchor_rank_te,
                                          best["w"], best["span"])
 
-        sub = tst[["ts_code", "trade_date", "pred"]].copy()
-        sub["ts_code"] = sub["ts_code"].astype(str)
-        sub["trade_date"] = sub["trade_date"].astype(np.int64)
-        sub = sub.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
+        # 竞赛版保持原样；可交易版把无行情行的 pred 压到最低（平滑之后才压）
+        halted_te = halted_mask(tst)
+        pred_tradable_te = demote_halted(tst["pred"].to_numpy(), halted_te)
+        log(f"  测试期无行情行（未上市/退市/停牌）：{int(halted_te.sum()):,} 行 ({halted_te.mean():.2%})")
 
-        sub_path = os.path.join(args.out_dir, "submission.csv")
-        sub.to_csv(sub_path, index=False, encoding="utf-8")
-        log(f"  已导出：{sub_path}（{len(sub):,} 行）")
-        log(f"  列 = {list(sub.columns)} | pred ∈ "
-            f"[{sub['pred'].min():.4f}, {sub['pred'].max():.4f}] | "
-            f"交易日 {sub['trade_date'].nunique()} 个 "
-            f"({sub['trade_date'].min()} ~ {sub['trade_date'].max()})")
+        def export_submission(pred: np.ndarray, filename: str) -> pd.DataFrame:
+            """组装提交表 → 自检（键值 / 重复 / 有限值）→ 写盘。自检不通过则不写文件。"""
+            sub = pd.DataFrame({"ts_code": tst["ts_code"].astype(str).to_numpy(),
+                                "trade_date": tst["trade_date"].astype(np.int64).to_numpy(),
+                                "pred": np.asarray(pred, dtype=np.float64)})
+            sub = sub.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
+            key_a = set(zip(sub["ts_code"], sub["trade_date"].astype(str)))
+            key_b = set(zip(test["ts_code"].astype(str), test["trade_date"].astype(str)))
+            if not (key_a == key_b and len(sub) == len(test)
+                    and not sub.duplicated(["ts_code", "trade_date"]).any()
+                    and np.isfinite(sub["pred"]).all()):
+                raise ValueError(f"{filename}：提交键值、重复记录或非有限预测检查失败")
+            path = os.path.join(args.out_dir, filename)
+            sub.to_csv(path, index=False, encoding="utf-8")
+            log(f"  已导出：{path}（{len(sub):,} 行，自检通过：键值与测试集 X 完全一致，"
+                f"无缺失、无重复） | pred ∈ [{sub['pred'].min():.4f}, {sub['pred'].max():.4f}]")
+            return sub
 
-        # 一致性自检：提交必须与测试集 X 逐行对应（两侧都转成字符串再比，避免类型错配）
-        sub["ts_code"] = sub["ts_code"].astype(str)
-        key_a = set(zip(sub["ts_code"], sub["trade_date"].astype(str)))
-        key_b = set(zip(test["ts_code"].astype(str), test["trade_date"].astype(str)))
-        if key_a == key_b and len(sub) == len(test) and not sub.duplicated(['ts_code', 'trade_date']).any() and np.isfinite(sub['pred']).all():
-            log("  [自检通过] 提交键值与测试集 X 完全一致，无缺失、无重复")
-        else:
-            raise ValueError('提交键值、重复记录或非有限预测检查失败')
+        sub = export_submission(tst["pred"].to_numpy(), "submission.csv")
+        if args.demote_halted:
+            export_submission(pred_tradable_te, "submission_tradable.csv")
 
         # 测试期预测换手率：直接复现官方换手率口径（剔涨停 → 按 pred 降序取前 10%）。
         # 测试集无 Y 标签，因此这是纯预测侧指标，可与官方公式逐字对照。
         tv_te, _ = daily_turnover(tst, date_idx=date_idx_te)
+        tst_tradable = tst[["ts_code", "trade_date", "flag_limit_up"]].copy()
+        tst_tradable["pred"] = pred_tradable_te
+        tv_te_tradable, _ = daily_turnover(tst_tradable, date_idx=date_idx_te)
+        del tst_tradable
+        halted_top_te = top_halted_share(tst, halted_te, date_idx=date_idx_te)
         log(f"  测试期预测换手率（剔涨停口径，{tst['trade_date'].nunique()} 个交易日）："
-            f"{tv_te:.4f}")
-        summary = {'parameters': best, 'final_iterations': final_iterations,
-                   'validation': {k: v for k, v in metrics.items() if np.isscalar(v)},
-                   'test_turnover': tv_te, 'submission_rows': len(sub),
-                   'note': '验证汇总包含选参窗口，不能视为独立最终留出成绩；测试集无Y。'}
+            f"竞赛口径 {tv_te:.4f} | 可交易口径 {tv_te_tradable:.4f}")
+        log(f"  竞赛口径下测试期 Top10% 中无行情行日均占比：{halted_top_te:.2%}")
+
+        scalars = lambda m: {k: v for k, v in m.items() if np.isscalar(v)}
+        summary = {
+            'parameters': best, 'final_iterations': final_iterations,
+            'validation': scalars(metrics),                      # 竞赛口径
+            'validation_tradable': scalars(metrics_tradable),    # 可交易口径
+            'test_turnover': tv_te,                              # 竞赛口径
+            'test_turnover_tradable': tv_te_tradable,            # 可交易口径
+            'halted': {
+                'validation_row_share': float(halted_va.mean()),
+                'validation_top10_share': halted_top_va,
+                'test_row_share': float(halted_te.mean()),
+                'test_top10_share': halted_top_te,
+            },
+            'submission_rows': len(sub),
+            'tradable_submission': 'submission_tradable.csv' if args.demote_halted else None,
+            'note': ('验证汇总包含选参窗口，不能视为独立最终留出成绩；测试集无Y。'
+                     '无后缀字段为竞赛口径（与官方 evaluate.py 一致），*_tradable 为'
+                     '无行情行（未上市/退市/停牌）pred 置为 -999 的可交易口径；top10_share 为'
+                     '竞赛口径下 Top10% 中无行情行的日均占比。'),
+        }
         with open(os.path.join(args.out_dir, 'run_summary.json'), 'w', encoding='utf-8') as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
         log("  该项在综合得分中的贡献敏感性（换手率每变化 0.05 对总分的直接影响）：")
