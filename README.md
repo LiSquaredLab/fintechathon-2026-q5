@@ -2,9 +2,11 @@
 
 量化选股流水线：从原始量价数据出发，构建多维复合因子，用 LightGBM 截面排序模型预测未来一日收益率，并针对官方复合评分公式（Rank IC 40% + Top 组年化超额 30% + 预测换手率 30%）做了专门优化。
 
-## 结果
+## 历史结果（修复前快照）
 
-在验证段（2019-03 ~ 2024-12，1416 个交易日）上的样本外表现：
+以下指标和已有图表、submission.csv 来自修复前代码，不能代表本分支修复后的成绩。重新运行完成后以 run_summary.json、运行日志和新产物为准。选参窗口的指标参与参数选择，不是独立留出测试成绩。
+
+历史验证段（2019-03 ~ 2024-12，1416 个交易日）表现：
 
 | 指标 | 基线（纯模型预测） | 最终方案 |
 |---|---|---|
@@ -35,7 +37,7 @@ pip install pandas numpy scipy scikit-learn lightgbm matplotlib seaborn
 python fintechathon_q5.py
 ```
 
-输出：`submission.csv` + 三张 300 DPI 图表。
+输出：`submission.csv`、三张 300 DPI 图表、`model_final.txt` 和 `run_summary.json`。模型文件和运行日志不纳入 Git。
 
 常用参数：
 
@@ -49,9 +51,11 @@ python fintechathon_q5.py --max_train_rows 400000                       # 小样
 
 ## 方法
 
-### 数据清洗
+### 数据清洗与行情时间轴
 
-- 剔除 `y_ret_1d` 缺失样本（全样本约 14.5%，训练集尾部约 30%，主要来自停牌/退市）；
+先在完整行情上构建因子并做逐日截面标准化，保留缺失与涨跌停日期的时间位置；下列过滤条件仅决定哪些样本参与拟合，外层验证和预测仍保留全市场，以对齐官方换手率和收益指标口径。
+
+- 拟合时剔除 `y_ret_1d` 缺失样本（全样本约 14.5%，训练集尾部约 30%，主要来自停牌/退市）；
 - **剔除涨停股**（`flag_limit_up == 1`）：涨停股次日往往无法以收盘价买入，保留会造出无法实现的虚高收益，这是官方评分口径明确要求的；
 - 训练时同时剔除跌停股（次日收益同样失真）。
 
@@ -80,7 +84,7 @@ python fintechathon_q5.py --max_train_rows 400000                       # 小样
 
 ### 模型
 
-`lgb.LGBMRegressor`，`objective='huber'`（对收益率厚尾稳健），`learning_rate=0.03`、`num_leaves=63`、`max_depth=6`、`min_child_samples=300`、`lambda_l2=5.0` 等平滑正则约束，配合早停。5 折模型等权集成后输出截面百分位排序。
+`lgb.LGBMRegressor`，`objective='huber'`（对收益率厚尾稳健），`learning_rate=0.03`、`num_leaves=63`、`max_depth=6`、`min_child_samples=300`、`lambda_l2=5.0` 等平滑正则约束，配合早停。每折在训练期内部末尾留出 60 个交易日用于早停，并留 embargo；外层验证不参与树数选择。外层模型在该折完整训练期重新拟合，用于样本外预测。最终模型以各折早停树数的中位数在全部可训练样本上重新拟合，再输出截面百分位排序。
 
 ## 需要注意的实现细节
 

@@ -34,3 +34,8 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 本地拟合产物
+model_final.txt
+run_*.log
+run_*.err
