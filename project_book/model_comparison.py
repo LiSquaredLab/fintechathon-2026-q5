@@ -148,7 +148,7 @@ def fit_predict(name, X_tr, y_tr, X_va, X_inner, y_inner, X_stop, y_stop, window
         m = q.build_model(SEED + window)
         m.fit(X_inner, y_inner, feature_name=q.FACTOR_COLS,
               eval_set=[(X_stop, y_stop)], eval_metric='l2',
-              callbacks=[lgb.early_stopping(LGB_ES_ROUNDS, first_metric_only=True, verbose=False)])
+              callbacks=[lgb.early_stopping(LGB_ES_ROUNDS, verbose=False)])
         iters = int(m.best_iteration_)
         m = q.build_model(SEED + window).set_params(n_estimators=iters)
         m.fit(X_tr, y_tr, feature_name=q.FACTOR_COLS)
@@ -273,8 +273,12 @@ def main():
 
     # ---- HANDOFF ----
     mean_table = df.groupby('model')[['ic_mean', 'annual_excess', 'mean_turnover', 'final_score']].mean().round(6)
-    reload_diffs = {m: max(g[[c for c in g.columns if 'reload_max_abs_diff' in c]].max())
-                    for m, g in df.groupby('model')} if len(df) else {}
+    # 只对真实保存了权重的模型取各自重载差列；融合由基础模型重载预测重构，无独立权重差
+    reload_diffs = {}
+    for m in ['ridge', 'lightgbm', 'xgboost', 'catboost']:
+        col = f'{m}_reload_max_abs_diff'
+        if col in df.columns:
+            reload_diffs[m] = float(df[col].max())
     summary = {
         'protocol': PROTOCOL,
         'results': df.to_dict('records'),
