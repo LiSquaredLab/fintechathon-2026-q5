@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="430" viewBox="0 0 1000 430">
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#1C1C1A"/></marker></defs>
+<rect width="1000" height="430" fill="#F0EFEB"/>
+<style>text{font-family:SimSun,serif;fill:#1C1C1A;font-size:20px;text-anchor:middle}.t{font-weight:bold;font-size:22px}.s{font-size:18px}.b{fill:#F0EFEB;stroke:#1C1C1A;stroke-width:2}.d{stroke-dasharray:7 5}.l{fill:none;stroke:#1C1C1A;stroke-width:2;marker-end:url(#a)}</style>
+<rect class="b d" x="20" y="20" width="415" height="92"/><text class="t" x="227" y="48">训练与树数选择</text><text class="s" x="227" y="76">5 折时序验证 / 60 日内层早停 / 6 日隔离</text><text class="s" x="227" y="101">树数中位数 153 → 全量合格样本重训</text>
+<path class="l d" d="M435 65 H620 V125"/><text class="s" x="622" y="52">训练目标：未来一日收益</text>
+<rect class="b" x="20" y="175" width="180" height="115"/><text class="t" x="110" y="210">原始量价输入</text><text class="s" x="110" y="240">OHLC / 成交量 / 额</text><text class="s" x="110" y="269">截至当日收盘</text>
+<rect class="b" x="235" y="175" width="200" height="115"/><text class="t" x="335" y="205">36 维因子向量</text><text class="s" x="335" y="234">滚动与截面因子</text><text class="s" x="335" y="259">当日中位数填补</text><text class="s" x="335" y="283">截面 Z-Score / ±5 裁剪</text>
+<path class="l" d="M200 232 H230"/><path class="l" d="M435 232 H475"/>
+<rect class="b" x="480" y="130" width="290" height="220"/><text class="t" x="625" y="160">LightGBM 回归模型</text><text class="s" x="625" y="186">Huber 损失 / 153 棵树</text>
+<rect class="b" x="495" y="207" width="72" height="52"/><text class="s" x="531" y="238">树 1</text><rect class="b" x="577" y="207" width="72" height="52"/><text class="s" x="613" y="238">树 2</text><text x="665" y="238">…</text><rect class="b" x="682" y="207" width="74" height="52"/><text class="s" x="719" y="238">树 153</text>
+<path d="M531 259 V278 H719 V259 M613 259 V278" fill="none" stroke="#1C1C1A" stroke-width="2"/><path class="l" d="M625 278 V302"/><text class="s" x="625" y="330">加性集成 → 原始回归预测</text>
+<path class="l" d="M770 232 H790 V112 H815"/><rect class="b" x="820" y="72" width="160" height="80"/><text class="t" x="900" y="103">截面百分位</text><text class="s" x="900" y="132">每日 0～1 排名</text>
+<path class="l" d="M900 152 V192"/><rect class="b" x="820" y="197" width="160" height="88"/><text class="t" x="900" y="226">个股 EMA20</text><text class="s" x="900" y="252">α = 2 / 21</text><text class="s" x="900" y="276">仅使用当前及过去</text>
+<path class="l" d="M900 285 V325"/><rect class="b" x="820" y="330" width="160" height="80"/><text class="t" x="900" y="361">最终 pred</text><text class="s" x="900" y="390">平滑排序分数</text>
+<path d="M20 360 H70" stroke="#1C1C1A" stroke-width="2"/><text class="s" x="173" y="366">预测路径</text><path d="M20 400 H70" stroke="#1C1C1A" stroke-width="2" stroke-dasharray="7 5"/><text class="s" x="173" y="406">训练与树数选择</text>
+</svg>

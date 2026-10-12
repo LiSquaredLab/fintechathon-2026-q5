@@ -1,13 +1,13 @@
 [
   {
     "page": 1,
-    "contentBottom": 533.546875,
+    "contentBottom": 659.640625,
     "footerTop": 1070,
     "overflow": false
   },
   {
     "page": 2,
-    "contentBottom": 551.796875,
+    "contentBottom": 990.046875,
     "footerTop": 1070,
     "overflow": false
   },
@@ -19,19 +19,19 @@
   },
   {
     "page": 4,
-    "contentBottom": 804.796875,
+    "contentBottom": 1034.796875,
     "footerTop": 1070,
     "overflow": false
   },
   {
     "page": 5,
-    "contentBottom": 993.796875,
+    "contentBottom": 972.796875,
     "footerTop": 1070,
     "overflow": false
   },
   {
     "page": 6,
-    "contentBottom": 940.296875,
+    "contentBottom": 919.296875,
     "footerTop": 1070,
     "overflow": false
   },
@@ -43,7 +43,7 @@
   },
   {
     "page": 8,
-    "contentBottom": 912.796875,
+    "contentBottom": 673.796875,
     "footerTop": 1070,
     "overflow": false
   }

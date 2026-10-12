@@ -1,5 +1,7 @@
 const fs = require('fs'), path=require('path');
 const {chromium}=require('C:/Users/Lenovo/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+// Regenerate the standalone architecture image before exporting the report.
+require('child_process').execFileSync(process.execPath,[path.join(__dirname,'generate_architecture.js')],{stdio:'inherit'});
 (async()=>{
  const browser=await chromium.launch({channel:'msedge',headless:true});
  const page=await browser.newPage({viewport:{width:900,height:1200}});
