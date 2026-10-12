@@ -16,6 +16,14 @@ run_final.log
 # 可交易版提交（--demote_halted 生成，约 58MB，可一键复现），不纳入 Git
 submission_tradable.csv
 
+# 项目书中间产物；保留 PDF、HTML 和生成脚本
+project_book/previews/
+project_book/evidence/
+project_book/__pycache__/
+project_book/*_text.txt
+project_book/layout_audit.json
+project_book/experiment_output.txt
+
 # 含队员个人信息的材料（姓名/学校/联系方式等）
 teaminformationform.xlsx
 TASK 0：大赛报名.docx
