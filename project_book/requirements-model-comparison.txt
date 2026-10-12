@@ -1,0 +1,9 @@
+# 多模型对比实验依赖（model_comparison.py）
+# 版本为本机实测通过版本；lightgbm 与正式流水线一致。
+lightgbm==4.7.0
+xgboost==3.4.1
+catboost==1.2.10
+scikit-learn==1.9.1
+numpy>=2.0
+pandas>=2.2
+scipy>=1.13
