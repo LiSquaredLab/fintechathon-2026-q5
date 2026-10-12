@@ -1,0 +1,43 @@
+{
+  "fig1_ic_trend.png": {
+    "identical_pixels": true,
+    "original_size": [
+      3820,
+      1805
+    ],
+    "regenerated_size": [
+      3820,
+      1805
+    ]
+  },
+  "fig2_excess_return.png": {
+    "identical_pixels": true,
+    "original_size": [
+      3703,
+      1805
+    ],
+    "regenerated_size": [
+      3703,
+      1805
+    ]
+  },
+  "fig3_feature_importance.png": {
+    "identical_pixels": true,
+    "original_size": [
+      3477,
+      2036
+    ],
+    "regenerated_size": [
+      3477,
+      2036
+    ]
+  },
+  "configuration": {
+    "factors": 36,
+    "span": 20,
+    "anchor_weight": 0,
+    "folds": 5,
+    "final_iterations": 153,
+    "skip_submission": true
+  }
+}
