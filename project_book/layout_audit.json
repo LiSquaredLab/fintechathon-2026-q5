@@ -7,13 +7,13 @@
   },
   {
     "page": 2,
-    "contentBottom": 996.796875,
+    "contentBottom": 975.796875,
     "footerTop": 1070,
     "overflow": false
   },
   {
     "page": 3,
-    "contentBottom": 956.296875,
+    "contentBottom": 977.296875,
     "footerTop": 1070,
     "overflow": false
   },
@@ -25,7 +25,7 @@
   },
   {
     "page": 5,
-    "contentBottom": 972.796875,
+    "contentBottom": 951.796875,
     "footerTop": 1070,
     "overflow": false
   },
@@ -37,13 +37,13 @@
   },
   {
     "page": 7,
-    "contentBottom": 930.796875,
+    "contentBottom": 909.796875,
     "footerTop": 1070,
     "overflow": false
   },
   {
     "page": 8,
-    "contentBottom": 694.796875,
+    "contentBottom": 883.796875,
     "footerTop": 1070,
     "overflow": false
   }
